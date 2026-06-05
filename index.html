@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VR Studio — Room Viewer</title>
+  <!-- A-Frame 1.7.1 (three r173) -->
+  <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+  <!-- three module + GLTFExporter for the Export button (flag-based, works on A-Frame objects) -->
+  <script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.module.js" } }
+  </script>
+  <script type="module">
+    import { GLTFExporter } from 'https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/exporters/GLTFExporter.js';
+    window.__exportGLB = (obj, filename) => {
+      const exporter = new GLTFExporter();
+      exporter.parse(obj, (result) => {
+        const blob = new Blob([result], { type: 'model/gltf-binary' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      }, (err) => { console.error('export error', err); alert('Export failed — see console.'); }, { binary: true });
+    };
+  </script>
+  <style>
+    :root{--bg:#11141a;--panel:#1b1f27;--line:#2c313c;--ink:#e8ecf1;--muted:#9aa3b2;--accent:#4f9d77;--warn:#caa14a;color-scheme:dark}
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+    a-scene{position:fixed;inset:0}
+    .panel{position:fixed;top:0;bottom:0;background:var(--panel);overflow:auto;z-index:10;padding:14px}
+    #left{left:0;width:240px;border-right:1px solid var(--line)}
+    #right{right:0;width:312px;border-left:1px solid var(--line)}
+    h1{font-size:16px;margin:0 0 4px}
+    .sub{color:var(--muted);font-size:12px;margin:0 0 10px}
+    .sec{margin:0 0 16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+    .sec h2{font-size:13px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+    .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:99px;white-space:nowrap}
+    .badge.live{background:#16331f;color:#7fe0a0}
+    .badge.regen{background:#332a16;color:var(--warn)}
+    .room{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid var(--line);background:#161a21;color:var(--ink);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer}
+    .room:hover{border-color:var(--accent)}
+    .room[aria-current="true"]{border-color:var(--accent);background:#16241d}
+    .room .n{font-weight:600;text-transform:capitalize}
+    .room .c{color:var(--muted);font-size:11px}
+    .room.local{border-color:#385c76;background:#161f2a}
+    .room.local[aria-current="true"]{border-color:#76b8ef;background:#14283b}
+    .ctrl{margin-bottom:11px}
+    .ctrl label{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}
+    .ctrl label .v{color:var(--muted)}
+    input[type=range]{width:100%}
+    input[type=color]{width:100%;height:30px;background:#161a21;border:1px solid var(--line);border-radius:6px}
+    select{width:100%;padding:7px;background:#161a21;color:var(--ink);border:1px solid var(--line);border-radius:6px}
+    .swatches{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+    .sw{border:1px solid var(--line);border-radius:6px;overflow:hidden;cursor:pointer;background:#161a21;padding:0}
+    .sw[aria-current="true"]{border-color:var(--accent)}
+    .sw img{display:block;width:100%;height:46px;object-fit:cover}
+    .sw span{display:block;font-size:10px;color:var(--muted);padding:3px}
+    .btn{width:100%;padding:9px;border:1px solid var(--line);background:#1f2630;color:var(--ink);border-radius:8px;cursor:pointer;font-weight:600;margin-bottom:8px}
+    .btn.primary{background:#16331f;border-color:var(--accent);color:#bdf0cf}
+    .btn:hover{border-color:var(--accent)}
+    .btn[aria-current="true"]{border-color:var(--accent);background:#16331f;color:#bdf0cf}
+    .stub{opacity:.5}
+    .why{font-size:11px;color:var(--warn);margin-top:4px}
+    #status{position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:20;background:#000a;padding:6px 12px;border-radius:8px;font-size:12px;color:var(--muted)}
+    .hint{font-size:11px;color:var(--muted);margin-top:6px}
+  </style>
+</head>
+<body>
+  <div id="status">loading…</div>
+
+  <!-- LEFT: room picker -->
+  <aside class="panel" id="left">
+    <h1>VR Studio</h1>
+    <p class="sub">Pick a room (pulled live from the cloud).</p>
+    <div id="rooms"></div>
+    <div class="sec" style="border:0;margin-top:8px;padding:0">
+      <h2>View</h2>
+      <button class="btn" id="viewInside">🧍 Inside (VR)</button>
+      <button class="btn" id="viewOverview">🏠 Overview</button>
+    </div>
+    <p class="hint">Inside = stand in the room (use this for VR). Overview = see the whole room while editing. Drag to look · WASD to move · "Enter VR" bottom-right.</p>
+  </aside>
+
+  <!-- RIGHT: edit panel -->
+  <aside class="panel" id="right">
+
+    <div class="sec">
+      <h2>Room light <span class="badge live">Updates instantly</span></h2>
+      <div class="ctrl"><label>Brightness <span class="v" id="vBright">1.0×</span></label><input type="range" id="bright" min="0.1" max="2.5" step="0.05" value="1.0"></div>
+      <div class="ctrl"><label>Warmth <span class="v" id="vWarm">neutral</span></label><input type="range" id="warm" min="0" max="1" step="0.01" value="0.5"></div>
+      <div class="ctrl"><label>Photo exposure <span class="v" id="vExp">1.0</span></label><input type="range" id="exp" min="0.4" max="2.0" step="0.05" value="1.0"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Daylight / windows <span class="badge live">Updates instantly</span></h2>
+      <div class="ctrl"><label>Sunlight strength <span class="v" id="vSun">1.0×</span></label><input type="range" id="sun" min="0" max="3" step="0.05" value="1.0"></div>
+      <div class="ctrl"><label>Time of day <span class="v" id="vTod">midday</span></label><input type="range" id="tod" min="0" max="1" step="0.01" value="0.5"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Surface color <span class="badge live">Updates instantly</span></h2>
+      <div class="ctrl"><label>Apply to</label>
+        <select id="surfCat">
+          <option value="wall">Walls</option>
+          <option value="floor">Floor</option>
+          <option value="ceiling">Ceiling</option>
+          <option value="furniture">Furniture &amp; objects</option>
+        </select>
+      </div>
+      <div class="ctrl"><label>Color</label><input type="color" id="surfColor" value="#c8c4bc"></div>
+      <div class="ctrl"><label>Surface finish — glossy ↔ matte <span class="v" id="vRough">matte</span></label><input type="range" id="rough" min="0" max="1" step="0.02" value="0.8"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Texture — Refine <span class="badge live">Updates instantly</span></h2>
+      <p class="sub">Pick a finish for the selected surface above.</p>
+      <div class="swatches" id="swatches"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Structure <span class="badge regen">Not available yet — request it</span></h2>
+      <div class="ctrl stub"><label>Ceiling height</label><input type="range" min="2" max="4" step="0.1" value="2.7" disabled></div>
+      <div class="ctrl stub"><label>Wall shape</label><select disabled><option>straight</option><option>curved</option></select></div>
+      <div class="why">Changing the shape rebuilds the room with Infinigen (coming next).</div>
+    </div>
+
+    <div class="sec" style="border:0">
+      <button class="btn primary" id="exportBtn">⤓ Export room (.glb) for VR</button>
+      <button class="btn" id="resetBtn">↺ Reset all edits</button>
+    </div>
+  </aside>
+
+  <a-scene
+    gltf-model="dracoDecoderPath: https://www.gstatic.com/draco/versioned/decoders/1.5.7/;
+                basisTranscoderPath: https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/libs/basis/;
+                meshoptDecoderPath: https://unpkg.com/meshoptimizer@0.20.0/meshopt_decoder.js"
+    renderer="colorManagement: true; physicallyCorrectLights: false; antialias: true; exposure: 1.0;
+              powerPreference: high-performance; highRefreshRate: true"
+    background="color: #20242c">
+    <a-sky id="sky" color="#243042"></a-sky>
+    <a-light id="lAmbient" type="ambient" intensity="0.5" color="#ffffff"></a-light>
+    <a-light id="lHemi" type="hemisphere" intensity="0.45" color="#ffffff" groundColor="#888888"></a-light>
+    <a-light id="lSun" type="directional" position="6 10 4" intensity="1.3" color="#ffffff"></a-light>
+    <a-entity id="room"></a-entity>
+    <a-grid position="0 -0.01 0" width="40" height="40" color="#2c3340"></a-grid>
+    <!-- rig sits on the FLOOR (y=0); eye height lives on the camera so VR headset
+         tracking doesn't stack on top of it and float you above the room -->
+    <a-entity id="player" position="0 0 6">
+      <a-camera position="0 1.65 0" wasd-controls="acceleration: 30" look-controls="pointerLockEnabled: false"></a-camera>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    const STORE = "https://track3-room-api-v2.dij002.workers.dev";
+    const THREE = AFRAME.THREE;
+    const $ = (id) => document.getElementById(id);
+    const sceneEl = document.querySelector('a-scene');
+    const roomEl = $('room');
+    const lights = { ambient:{el:$('lAmbient'),base:0.5}, hemi:{el:$('lHemi'),base:0.45} };
+    const sunBase = 1.3;
+    let currentRoom = null;
+    let roomSpan = 6, currentView = 'inside';
+    const setStatus = (t) => $('status').textContent = t;
+    const cap = (s) => s.replace(/_/g,' ');
+    const VISIBLE_ROOM_ORDER = ['living_room', 'bathroom', 'dining_room', 'kitchen', 'bedroom', 'classroom'];
+
+    // ---- Catalog ----
+    async function loadCatalog(){
+      setStatus('fetching rooms…');
+      const res = await fetch(`${STORE}/api/rooms`);
+      if(!res.ok) throw new Error(`/api/rooms ${res.status}`);
+      const { rooms } = await res.json();
+      const wrap = $('rooms'); wrap.replaceChildren();
+      const byId = new Map(rooms.map((room) => [room.room_id, room]));
+      const sortedRooms = VISIBLE_ROOM_ORDER.map((roomId) => byId.get(roomId)).filter(Boolean);
+      for(const r of sortedRooms){
+        const b = document.createElement('button');
+        b.className='room';
+        b.innerHTML = `<span class="n">${cap(r.room_id)}</span><span class="c">${r.variant_count} variant${r.variant_count===1?'':'s'}</span>`;
+        b.addEventListener('click', ()=>selectRoom(r.room_id,b));
+        wrap.appendChild(b);
+      }
+      setStatus(`${sortedRooms.length} rooms — pick one`);
+      const requested = new URLSearchParams(location.search).get('room') || 'classroom';
+      const requestedButton = requested ? [...wrap.querySelectorAll('.room')].find((button) => button.textContent.toLowerCase().includes(requested.replace(/_/g, ' ').toLowerCase())) : null;
+      const first = requestedButton || wrap.querySelector('.room');
+      if(first) first.click();
+    }
+    async function selectRoom(roomId, btn){
+      document.querySelectorAll('.room').forEach(x=>x.setAttribute('aria-current','false'));
+      if(btn) btn.setAttribute('aria-current','true');
+      setStatus(`loading ${cap(roomId)}…`);
+      const res = await fetch(`${STORE}/api/rooms/${encodeURIComponent(roomId)}`);
+      if(!res.ok){ setStatus(`error ${res.status}`); return; }
+      const { variants } = await res.json();
+      if(!variants || !variants.length){ setStatus('no variants'); return; }
+      let url = variants[0].entrypoint_url; if(url.startsWith('/')) url = STORE + url;
+      currentRoom = roomId;
+      roomEl.removeAttribute('gltf-model');
+      roomEl.replaceChildren();
+      roomEl.setAttribute('gltf-model', url);
+    }
+
+    // ---- Load → frame + capture materials ----
+    roomEl.addEventListener('model-error', ()=>setStatus('load failed (see console)'));
+    roomEl.addEventListener('model-loaded', (e)=>{
+      const obj = e.detail.model;
+      const box = new THREE.Box3().setFromObject(obj);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const center = new THREE.Vector3(); box.getCenter(center);
+      obj.position.x -= center.x; obj.position.z -= center.z; obj.position.y -= box.min.y;
+      roomSpan = Math.max(size.x, size.z, 1);
+      setView(currentView);
+      captureMaterials(obj);
+      applyLighting(); applyDaylight(); applyExposure();
+      setStatus(`${cap(currentRoom)} — ${countMeshes(obj)} meshes`);
+    });
+    const countMeshes = (root)=>{ let n=0; root.traverse(o=>{if(o.isMesh)n++;}); return n; };
+
+    // ---- Camera view: inside (VR, eye height) vs overview (dollhouse) ----
+    function setView(mode){
+      currentView = mode;
+      const p = $('player'), cam = p.querySelector('a-camera');
+      if(mode==='overview'){
+        // rig lifted up + back; camera (child, eye-height) tilts down at the dollhouse
+        p.setAttribute('position', `0 ${(roomSpan*0.65).toFixed(2)} ${(roomSpan*0.95).toFixed(2)}`);
+        if(cam) cam.setAttribute('rotation', '-28 0 0');
+      } else { // inside: rig on the floor; camera's 1.65 = eye height. Stand back a bit, look across.
+        p.setAttribute('position', `0 0 ${(roomSpan*0.3).toFixed(2)}`);
+        if(cam) cam.setAttribute('rotation', '0 0 0');
+      }
+      $('viewInside').setAttribute('aria-current', mode==='inside');
+      $('viewOverview').setAttribute('aria-current', mode==='overview');
+    }
+
+    function categoryOf(mat, mesh){
+      const name = ((mat.name||'')+' '+(mesh.name||'')).toLowerCase();
+      if(name.includes('floor')) return 'floor';
+      if(name.includes('ceiling')) return 'ceiling';
+      if(name.includes('wall')||name.includes('exterior')) return 'wall';
+      return 'furniture';
+    }
+    function captureMaterials(root){
+      root.traverse(o=>{
+        if(!o.isMesh||!o.material) return;
+        (Array.isArray(o.material)?o.material:[o.material]).forEach(m=>{
+          m.userData.cat = categoryOf(m,o);
+          if(m.userData.origColor===undefined && m.color) m.userData.origColor = m.color.getHex();
+          if(m.userData.origRough===undefined && 'roughness' in m) m.userData.origRough = m.roughness;
+          // Walls are exported as translucent "inspection" walls (alpha ~0.42) → you see
+          // the sky through them and rooms look wall-less. Force walls opaque (windows/glass
+          // stay translucent) so rooms read as enclosed.
+          if(m.userData.cat==='wall' && m.transparent){ m.transparent=false; m.opacity=1; m.depthWrite=true; m.needsUpdate=true; }
+        });
+      });
+    }
+    function eachMaterial(cb){
+      const obj = roomEl.getObject3D('mesh'); if(!obj) return;
+      obj.traverse(o=>{ if(o.isMesh&&o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(cb); });
+    }
+
+    // ---- Lighting / warmth / exposure ----
+    function kelvin(t){ const warm=new THREE.Color('#ffcaa0'),cool=new THREE.Color('#bcd4ff'),n=new THREE.Color('#ffffff');
+      return t<0.5 ? warm.clone().lerp(n,t/0.5) : n.clone().lerp(cool,(t-0.5)/0.5); }
+    function applyLighting(){
+      const b=parseFloat($('bright').value), t=parseFloat($('warm').value), col='#'+kelvin(t).getHexString();
+      for(const k in lights){ lights[k].el.setAttribute('intensity',(lights[k].base*b).toFixed(2)); lights[k].el.setAttribute('color',col); }
+      $('vBright').textContent=b.toFixed(2)+'×'; $('vWarm').textContent=t<0.45?'warm':t>0.55?'cool':'neutral';
+    }
+    function applyExposure(){ const v=parseFloat($('exp').value);
+      if(sceneEl.renderer){ sceneEl.renderer.toneMapping=THREE.ACESFilmicToneMapping; sceneEl.renderer.toneMappingExposure=v; }
+      $('vExp').textContent=v.toFixed(2); }
+    // ---- Daylight / windows (sun + sky by time of day) ----
+    function applyDaylight(){
+      const s=parseFloat($('sun').value), tod=parseFloat($('tod').value);
+      // elevation: low at dawn/dusk, high midday; warm color at edges, white midday
+      const elev = Math.sin(tod*Math.PI)*70 + 6;          // 6°..76°
+      const az = (tod*140 - 70);                            // sweep E→W
+      const rad=Math.PI/180, r=12;
+      $('lSun').setAttribute('position', `${(r*Math.cos(az*rad)).toFixed(1)} ${(r*Math.sin(elev*rad)).toFixed(1)} ${(r*Math.sin(az*rad)).toFixed(1)}`);
+      $('lSun').setAttribute('intensity', (sunBase*s).toFixed(2));
+      const edge = 1-Math.sin(tod*Math.PI);                // 1 at dawn/dusk, 0 midday
+      const sunCol = new THREE.Color('#fff4e0').lerp(new THREE.Color('#ff9a5a'), edge*0.8);
+      $('lSun').setAttribute('color', '#'+sunCol.getHexString());
+      const sky = new THREE.Color('#7fa8d8').lerp(new THREE.Color('#243042'), edge*0.7);
+      $('sky').setAttribute('color', '#'+sky.getHexString());
+      $('vSun').textContent=s.toFixed(2)+'×';
+      $('vTod').textContent = tod<0.25?'dawn':tod<0.45?'morning':tod<0.55?'midday':tod<0.8?'afternoon':'dusk';
+    }
+
+    // ---- Surface color / roughness ----
+    function applySurface(){
+      const cat=$('surfCat').value, hex=$('surfColor').value, rough=parseFloat($('rough').value);
+      $('vRough').textContent = rough<0.33?'glossy':rough<0.66?'satin':'matte';
+      eachMaterial(m=>{ if(m.userData.cat!==cat) return; if(m.color) m.color.set(hex); if('roughness' in m) m.roughness=rough; m.needsUpdate=true; });
+    }
+
+    // ---- Texture gallery (Refine) — canvas-generated tileable finishes ----
+    const TEXKINDS = ['none','plaster','concrete','wood','tile','fabric'];
+    const texCache = {};
+    function makeCanvas(kind){
+      const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+      const noise=(a)=>{const d=x.getImageData(0,0,128,128);for(let i=0;i<d.data.length;i+=4){const n=(Math.random()-0.5)*a;d.data[i]+=n;d.data[i+1]+=n;d.data[i+2]+=n;}x.putImageData(d,0,0);};
+      if(kind==='plaster'){x.fillStyle='#d8d2c6';x.fillRect(0,0,128,128);noise(26);}
+      else if(kind==='concrete'){x.fillStyle='#9a9a9a';x.fillRect(0,0,128,128);noise(40);}
+      else if(kind==='wood'){x.fillStyle='#8a5a2b';x.fillRect(0,0,128,128);for(let i=0;i<128;i+=8){x.fillStyle=i%16?'#7a4d24':'#94632f';x.fillRect(0,i,128,4);}noise(12);}
+      else if(kind==='tile'){x.fillStyle='#cfd6da';x.fillRect(0,0,128,128);x.strokeStyle='#9aa6ad';x.lineWidth=4;for(let i=0;i<=128;i+=32){x.beginPath();x.moveTo(i,0);x.lineTo(i,128);x.moveTo(0,i);x.lineTo(128,i);x.stroke();}}
+      else if(kind==='fabric'){x.fillStyle='#b9a98e';x.fillRect(0,0,128,128);x.strokeStyle='#a8987d';for(let i=0;i<128;i+=6){x.beginPath();x.moveTo(i,0);x.lineTo(i,128);x.moveTo(0,i);x.lineTo(128,i);x.stroke();}noise(10);}
+      return c;
+    }
+    function texFor(kind){
+      if(kind==='none') return null;
+      if(!texCache[kind]){ const t=new THREE.CanvasTexture(makeCanvas(kind)); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(4,4); texCache[kind]=t; }
+      return texCache[kind];
+    }
+    // Many rooms lost their UVs in processing (fallback palette has no textures, so
+    // prune/decimate dropped them). Generate world-space planar UVs so textures tile
+    // on ANY mesh regardless of original UVs (and tile uniformly in world units).
+    const TILE = 1.2; // metres per texture repeat
+    function ensureProjectedUV(mesh){
+      const g = mesh.geometry, pos = g.getAttribute('position'); if(!pos) return;
+      mesh.updateWorldMatrix(true,false);
+      const N = pos.count, wp = new THREE.Vector3(), world = new Float32Array(N*3);
+      const mn=[1e9,1e9,1e9], mx=[-1e9,-1e9,-1e9];
+      for(let i=0;i<N;i++){ wp.fromBufferAttribute(pos,i).applyMatrix4(mesh.matrixWorld);
+        world[i*3]=wp.x; world[i*3+1]=wp.y; world[i*3+2]=wp.z;
+        const c=[wp.x,wp.y,wp.z]; for(let k=0;k<3;k++){ if(c[k]<mn[k])mn[k]=c[k]; if(c[k]>mx[k])mx[k]=c[k]; } }
+      const ext=[mx[0]-mn[0],mx[1]-mn[1],mx[2]-mn[2]];
+      let drop=0; if(ext[1]<ext[drop])drop=1; if(ext[2]<ext[drop])drop=2;   // drop the thin axis (surface normal)
+      const ax=[0,1,2].filter(k=>k!==drop);
+      const uv=new Float32Array(N*2);
+      for(let i=0;i<N;i++){ uv[i*2]=world[i*3+ax[0]]/TILE; uv[i*2+1]=world[i*3+ax[1]]/TILE; }
+      g.setAttribute('uv', new THREE.BufferAttribute(uv,2));
+    }
+    function applyTexture(kind){
+      const cat=$('surfCat').value;
+      const obj=roomEl.getObject3D('mesh'); if(!obj) return;
+      obj.traverse(o=>{
+        if(!o.isMesh||!o.material) return;
+        const mats=Array.isArray(o.material)?o.material:[o.material];
+        if(!mats.some(m=>m.userData.cat===cat)) return;
+        if(kind!=='none') ensureProjectedUV(o);   // make sure this surface has UVs to tile
+        mats.forEach(m=>{ if(m.userData.cat!==cat) return;
+          const t=texFor(kind); m.map = t?t.clone():null;
+          if(m.map){ m.map.wrapS=m.map.wrapT=THREE.RepeatWrapping; m.map.repeat.set(1,1); m.map.needsUpdate=true; }
+          m.needsUpdate=true; });
+      });
+    }
+    function buildSwatches(){
+      const wrap=$('swatches'); wrap.replaceChildren();
+      for(const k of TEXKINDS){
+        const b=document.createElement('button'); b.className='sw';
+        const label=k==='none'?'plain':k;
+        if(k==='none'){ b.innerHTML=`<img style="background:#161a21" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"><span>plain</span>`; }
+        else { b.innerHTML=`<img src="${makeCanvas(k).toDataURL()}"><span>${label}</span>`; }
+        b.addEventListener('click',()=>{ document.querySelectorAll('.sw').forEach(s=>s.setAttribute('aria-current','false')); b.setAttribute('aria-current','true'); applyTexture(k); });
+        wrap.appendChild(b);
+      }
+    }
+
+    // ---- Export + Reset ----
+    $('exportBtn').addEventListener('click',()=>{
+      const obj=roomEl.getObject3D('mesh') || roomEl.object3D;
+      if(!obj){ alert('Load a room first.'); return; }
+      if(!window.__exportGLB){ alert('Exporter still loading — try again in a second.'); return; }
+      setStatus('exporting…');
+      window.__exportGLB(obj, `${currentRoom||'room'}_edited.glb`);
+      setStatus(`exported ${currentRoom}_edited.glb`);
+    });
+    $('resetBtn').addEventListener('click',()=>{
+      eachMaterial(m=>{ if(m.userData.origColor!==undefined&&m.color) m.color.setHex(m.userData.origColor); if(m.userData.origRough!==undefined) m.roughness=m.userData.origRough; m.map=null; m.needsUpdate=true; });
+      ['bright','warm','exp','sun','tod','rough'].forEach(id=>{ const d={bright:1,warm:0.5,exp:1,sun:1,tod:0.5,rough:0.8}[id]; $(id).value=d; });
+      $('surfColor').value='#c8c4bc';
+      document.querySelectorAll('.sw').forEach(s=>s.setAttribute('aria-current','false'));
+      applyLighting(); applyDaylight(); applyExposure();
+      setStatus('edits reset');
+    });
+
+    // ---- Wire inputs ----
+    ['bright','warm'].forEach(id=>$(id).addEventListener('input',applyLighting));
+    $('exp').addEventListener('input',applyExposure);
+    ['sun','tod'].forEach(id=>$(id).addEventListener('input',applyDaylight));
+    ['surfColor','rough'].forEach(id=>$(id).addEventListener('input',applySurface));
+    $('viewInside').addEventListener('click',()=>setView('inside'));
+    $('viewOverview').addEventListener('click',()=>setView('overview'));
+
+    // ---- Performance: clamp render resolution on high-DPI displays ----
+    // A-Frame renders at window.devicePixelRatio by default; on a Retina/4K screen that's
+    // 2× → FOUR× the pixels to shade every frame, which makes WASD navigation feel choppy
+    // even though the geometry is light. Cap it (visually near-identical, much smoother).
+    // A-Frame re-applies devicePixelRatio on every resize, so we wrap setPixelRatio to clamp.
+    const PIXEL_RATIO_CAP = 1.5;
+    function clampPixelRatio(){
+      const r = sceneEl.renderer; if(!r || r.__prCapped) return;
+      const _spr = r.setPixelRatio.bind(r);
+      r.setPixelRatio = (v)=>_spr(Math.min(v, PIXEL_RATIO_CAP));
+      r.__prCapped = true;
+      r.setPixelRatio(window.devicePixelRatio);   // apply immediately
+    }
+    sceneEl.addEventListener('loaded',()=>{ clampPixelRatio(); applyExposure(); applyDaylight(); });
+    buildSwatches();
+    loadCatalog().catch(err=>{ setStatus('error: '+err.message); console.error(err); });
+  </script>
+</body>
+</html>
